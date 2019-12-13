@@ -35,6 +35,8 @@ import itertools
 import shlex
 import logging
 import errno
+import pytesseract
+from PIL import Image
 import argparse
 
 # Python 2 and 3 compatibility
@@ -152,10 +154,11 @@ def shell_exec(url, command, options):
     
     timeout = int(options.timeout)
     start = datetime.datetime.now()
-    
     try :
-        p = subprocess.Popen(shlex.split(command, posix="win" not in sys.platform), shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        
+        s = shlex.split(command, posix="win" not in sys.platform)
+        s = [' '.join(s[:3])] + s[3:]
+        p = subprocess.Popen(s, shell=False, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
         # binaries timeout
         while p.poll() is None:
             time.sleep(0.1)
@@ -190,10 +193,12 @@ def shell_exec(url, command, options):
     
     except OSError as e:
         if e.errno and e.errno == errno.ENOENT :
+            print(e)
             logger_url.error('renderer binary could not have been found in your current PATH environment variable, exiting')
     
     except Exception as err:
         logger_gen.error('Unknown error: %s, exiting' % err)
+        print(err)
         
         return SHELL_EXECUTION_ERROR
 
@@ -324,7 +329,7 @@ def craft_bin_path(options):
     
     if options.renderer_binary != None: 
         final_bin.append(os.path.join(options.renderer_binary))
-    
+
     else:
         if options.renderer == 'phantomjs':
             final_bin.append(PHANTOMJS_BIN)
@@ -338,7 +343,7 @@ def craft_bin_path(options):
         elif options.renderer == 'firefox':
             final_bin.append(FIREFOX_BIN)
         
-    return " ".join(final_bin)
+    return os.path.join(options.renderer_binary)
 
 def craft_arg(param):
     if "win" in sys.platform.lower():
@@ -358,41 +363,14 @@ def craft_cmd(url_and_options):
     logger_url.addHandler(logger_output)
     logger_url.setLevel(options.log_level)
     
-    output_format = options.format if options.renderer == 'phantomjs' else 'png'
+    output_format = 'png'
     output_filename = os.path.join(options.output_directory, ('%s.%s' % (filter_bad_filename_chars(url), output_format)))
-        
-    # PhantomJS renderer
-    if options.renderer == 'phantomjs':
-        # If you ever want to add some voodoo options to the phantomjs command to be executed, that's here right below
-        cmd_parameters = [ craft_bin_path(options),
-                           '--ignore-ssl-errors=true',
-                           '--ssl-protocol=any',
-                           '--ssl-ciphers=ALL' ]
-        
-        cmd_parameters.append("--proxy %s" % options.proxy) if options.proxy != None else None
-        cmd_parameters.append("--proxy-auth %s" % options.proxy_auth) if options.proxy_auth != None else None
-        cmd_parameters.append("--proxy-type %s" % options.proxy_type) if options.proxy_type != None else None
-
-        cmd_parameters.append('%s url_capture=%s output_file=%s' % (craft_arg(WEBSCREENSHOT_JS), url, craft_arg(output_filename)))
-        
-        cmd_parameters.append('header="Cookie: %s"' % options.cookie.rstrip(';')) if options.cookie != None else None
-        
-        cmd_parameters.append('http_username=%s' % options.http_username) if options.http_username != None else None
-        cmd_parameters.append('http_password=%s' % options.http_password) if options.http_password != None else None
-        
-        cmd_parameters.append('width=%d' % int(options.window_size.split(',')[0]))
-        cmd_parameters.append('height=%d' % int(options.window_size.split(',')[1]))
-        
-        cmd_parameters.append('format=%s' % options.format)
-        cmd_parameters.append('quality=%d' % int(options.quality))
-        
-        if options.header:
-            for header in options.header:
-                cmd_parameters.append('header="%s"' % header.rstrip(';'))
-    
+    options.renderer = 'chrome'
+    bin_path = craft_bin_path(options)
+    #bin_path = '"' + bin_path + '"'
     # Chrome and chromium renderers
-    elif (options.renderer == 'chrome') or (options.renderer == 'chromium'): 
-        cmd_parameters =  [ craft_bin_path(options),
+    if (options.renderer == 'chrome') or (options.renderer == 'chromium'): 
+        cmd_parameters =  [ bin_path,
                             '--allow-running-insecure-content',
                             '--ignore-certificate-errors',
                             '--ignore-urlfetcher-cert-requests',
@@ -408,7 +386,7 @@ def craft_cmd(url_and_options):
         cmd_parameters.append('--proxy-server=%s' % options.proxy) if options.proxy != None else None
     
     # Firefox renderer
-    elif options.renderer == 'firefox': 
+    else: 
         cmd_parameters =  [ craft_bin_path(options),
                             '--new-instance',
                             '--screenshot=%s' % craft_arg(output_filename),
@@ -416,9 +394,7 @@ def craft_cmd(url_and_options):
                             '%s' % craft_arg(url) ]
                             
     cmd = " ".join(cmd_parameters)
-    
     logger_url.debug("Shell command to be executed\n'%s'\n" % cmd)
-    
     execution_retval = shell_exec(url, cmd, options)
     
     return execution_retval, url
@@ -450,6 +426,10 @@ def take_screenshot(url_list, options):
             print("    %s" % url)
 
     return None
+
+def extract_text(screenshot):
+    text = pytesseract.image_to_string(Image.open(screenshot))
+    return text
     
 def main():
     """
